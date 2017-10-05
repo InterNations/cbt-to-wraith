@@ -1,0 +1,46 @@
+cbt:
+  username: email
+  auth_key: key
+
+domains:
+  prod: ""
+  stage: ""
+
+paths:
+  - section1
+  - section2
+  - ...
+
+test_devices:
+  iPhone5s-iOS7sim|MblSafari7.0|640x1136:
+    resolution: 320
+    prefix: iPhone
+  iPadAir2-iOS9Sim|MblSafari9.0|1536x2048:
+    resolution: 768
+    prefix: iPad
+  Win10|IE11|1280x800:
+    resolution: 1280
+    prefix: Windows
+
+# The directory that your screenshots will be stored in
+directory: 'build/wraith'
+
+# Amount of fuzz ImageMagick will use when comparing images. A higher fuzz makes the comparison less strict.
+fuzz: '20%'
+
+# (optional) The maximum acceptable level of difference (in %) between two images before Wraith reports a failure. Default: 0
+threshold: 0
+
+# (optional) Specify the template (and generated thumbnail sizes) for the gallery output.
+gallery:
+  template: 'basic_template' # Examples: 'basic_template' (default), 'slideshow_template'
+  thumb_width:  200
+  thumb_height: 200
+
+# (optional) Choose which results are displayed in the gallery, and in what order. Default: alphanumeric
+# Options:
+#   alphanumeric - all paths (with or without a difference) are shown, sorted by path
+#   diffs_first - all paths (with or without a difference) are shown, sorted by difference size (largest first)
+#   diffs_only - only paths with a difference are shown, sorted by difference size (largest first)
+# Note: different screen widths are always grouped together.
+mode: diffs_first

@@ -1,1 +1,1 @@
-# cbt-to-wraith
+# CrossBrowserTesting screenshots with BBC Wraith

@@ -1,75 +1,162 @@
+const YAML = require('yamljs');
+const fs = require('fs-extra')
 const querystring = require('querystring');
 const cbt = require('cbt_tunnels');
-const request = require('request');
-const fs = require('fs');
-const unzip = require('unzip2');
+const r = require('request');
+const request = require('request-promise');
+const AdmZip = require('adm-zip');
 
-const username = //CBT_username;
-const authKey = //CBT_authKey;
-const basicAuth = Buffer.from(unescape(encodeURIComponent(username + ":" + authKey))).toString('base64');
-
-const chromeBrowsers = ['Chrome59', 'Chrome60'];
-const ieBrowsers = ['IE11'];
-const firefoxBrowsers = ['FF54'];
-const iosMobile = ['iPhone5s-ios7sim|MblSafari7.0', 'iPhone7-ios102sim|MblSafari10.0'];
-const androidMobile = ['GalaxyS3-And41|MblChrome51','Nexus9-And60|MblChrome59'];
-
-const testUrl = //testUrl
-const testBrowsers = chromeBrowsers.concat(ieBrowsers, iosMobile, androidMobile);
-
-let intervalId;
-
-const screenshotOptions = querystring.stringify({
-    url: testUrl,
-    browsers: testBrowers
-});
-
-const getZipScreenshots = (zipFileUrl) => {
-    return new Promise(resolve => {
-        request({
-            headers: {'Authorization': "Basic " + `${basicAuth}`},
-            uri: zipFileUrl
-        }).pipe(unzip.Extract({path: './screenshots'}).on('finish', () => resolve()));
-    })
+if (!process.argv[2]) {
+    console.error('No config file specified.');
+    process.exit(1);
 }
 
-const isRunning = async (screenshotTestId) => {
-    request({
-        headers: {'Authorization': "Basic " + `${basicAuth}`},
-        uri: 'https://crossbrowsertesting.com/api/v3/screenshots/' + screenshotTestId,
-    }, (err, res, body) => {
-        if (!err && res.statusCode == 200){
-            body = JSON.parse(body);
-            if(!body.versions[0].active) {
-                clearInterval(intervalId);
-                console.log('Screenshots taken');
-                console.log('URL: ', body.versions[0].show_results_web_url);
-                console.log('Zip Url: ', body.versions[0].download_results_zip_url);
-                getZipScreenshots(body.versions[0].download_results_zip_url).then(() => cbt.stop());
-            } else {
-                console.log('Still Running');
-            }
-        };
+const config = YAML.load(process.argv[2]);
+
+console.log('Browsers:', Object.keys(config.test_devices).join(', '));
+
+const apiUrl = `https://${config.cbt.username}:${config.cbt.auth_key}@crossbrowsertesting.com/api/v3/screenshots`;
+
+function timeout(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function sleep(ms) {
+    await timeout(ms);
+}
+
+async function getBrowserList() {
+    let res;
+
+    try {
+        res = await request({ uri: apiUrl + '/browsers' });
+        JSON.parse(res).forEach(e => {
+            console.log(e.api_name);
+            console.log('Browsers:');
+            e.browsers.forEach( b => process.stdout.write(b.api_name + ' '));
+            console.log('\nResolutions:');
+            e.resolutions.forEach( r => process.stdout.write(r.name + ' '));
+            console.log('\n\n---\n');
+        });
+    } catch (err) {
+        console.log(err);
+    }
+}
+
+function download(uri, path) {
+
+    return new Promise((resolve, reject) => {
+        const file = fs.createWriteStream(path);
+        file.on('open', () => {
+            r
+                .get(uri)
+                .on('error', (err) => reject(err))
+                .pipe(file)
+                .on('finish', () => resolve());
+        });
     });
-};
+}
 
-const screenshotTestApi = () => {
-    request.post({
-        headers: {'Authorization': "Basic " + `${basicAuth}`},
-        uri: 'https://crossbrowsertesting.com/api/v3/screenshots?' + screenshotOptions
-    }, (err, res, body) => {
-        if (!err && res.statusCode == 200){
-            body = JSON.parse(body)
-            console.log('Screenshot Test Id: ', body.screenshot_test_id);
-            console.log('Test URL: ', body.url);
-            intervalId = setInterval(isRunning, 5000, body.screenshot_test_id);
-        } else {
-            console.error(err)
+async function takeSnapshot(pageUrl, pageName, variant, browsers, prefix_to_res, snapshots_folder) {
+    let res;
+
+    try {
+        res = await request.post({
+            uri: apiUrl + '?' + querystring.stringify({
+                url: pageUrl,
+                check_url: false,
+                browsers
+            })
+        });
+    } catch(err) {
+        console.log(err);
+        return;
+    }
+
+    const testId = JSON.parse(res).screenshot_test_id;
+
+    console.log(`Taking snapshots: ${pageName} on ${variant} (${testId})...`);
+
+    let testInfo;
+    let elapsedTime = 0;
+
+    while (true) {
+        await sleep(1000);
+        elapsedTime++;
+        // process.stdout.write('.');
+
+        let res;
+
+        try {
+            res = await request({ uri: apiUrl + '/' + testId });
+        } catch(err) {
+            console.log(err);
+            continue;
         }
-    })
-};
 
-cbt.start({"username": username, "authkey": authKey}, (err) => {
-    if(err) { return console.error(err) };
-    screenshotTestApi();
+        testInfo = JSON.parse(res).versions[0];
+
+        if (!testInfo.active) {
+            break;
+        }
+    }
+
+    const zipFileName = 'cbt_' + pageName + '_' + variant + '.zip';
+    const sectionFolder = snapshots_folder + '/' + pageName;
+
+    console.log(`${elapsedTime}s. ${testInfo.download_results_zip_public_url} -> ${zipFileName} -> ${sectionFolder}`);
+
+    await download(testInfo.download_results_zip_public_url, zipFileName);
+
+    const zip = new AdmZip(zipFileName);
+    const entries = zip.getEntries();
+
+    fs.ensureDirSync(sectionFolder);
+
+    entries.forEach(zipEntry => {
+        if (zipEntry.entryName.endsWith('_chromeless.png')) {
+
+            zip.extractEntryTo(zipEntry.entryName, sectionFolder);
+
+            fs.renameSync(
+                sectionFolder + '/' + zipEntry.entryName,
+                sectionFolder +
+                '/' +
+                zipEntry.entryName
+                    .replace(
+                        new RegExp([...prefix_to_res.keys()].join('|')),
+                        match => prefix_to_res.get(match) + '_' + match
+                    )
+                    .replace('_chromeless', '_' + variant)
+            );
+        }
+    });
+
+    // fs.removeSync('snapshots.zip');
+}
+
+const prefix_to_res = new Map();
+
+for (let device in config.test_devices) {
+    if (config.test_devices.hasOwnProperty(device)) {
+        prefix_to_res.set(config.test_devices[device].prefix, config.test_devices[device].resolution);
+    }
+}
+
+cbt.start({username: config.cbt.username, authkey: config.cbt.auth_key}, async (err) => {
+    if (err) {
+        return console.error(err);
+    }
+
+    const browsers = Object.keys(config.test_devices);
+
+    fs.removeSync(config.directory);
+
+    for (let section of config.paths) {
+        await takeSnapshot(config.domains.stage + '/' + section, section, 'stage', browsers, prefix_to_res, config.directory);
+        await takeSnapshot(config.domains.prod + '/' + section, section, 'prod', browsers, prefix_to_res, config.directory);
+    }
+
+    // await getBrowserList();
+    cbt.stop();
 });
